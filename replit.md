@@ -1,6 +1,6 @@
-# [Project name]
+# Bankai Discord Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+بوت Discord عربي لإدارة السيرفر، الأرصدة، التحويلات، الرواتب، المهام، التحذيرات، والسجلات.
 
 ## Run & Operate
 
@@ -10,6 +10,9 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- Secret: `DISCORD_BOT_TOKEN` — Bot token stored in Replit Secrets
+- Optional env: `BOT_OWNER_ID` — Discord user ID allowed to grant/reset balances
+- Optional env: `DISCORD_ENABLE_PRIVILEGED_INTENTS=true` — enable after turning on Server Members Intent and Message Content Intent in Discord Developer Portal
 
 ## Stack
 
@@ -22,15 +25,23 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/discord/bot.ts` — Discord client, slash commands, aliases, economy, moderation, welcome, auto-replies, and event logs
+- `lib/db/src/schema/index.ts` — wallets, warnings, and per-server settings
+- `artifacts/api-server/src/index.ts` — starts the API server and Discord client
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The bot token is read only from Replit Secrets and is never committed to source.
+- Slash commands are registered globally on startup so every server can discover the same command set.
+- The optional privileged-intent flag prevents the whole bot from failing when Discord Developer Portal intents have not been enabled.
+- Server state is stored in PostgreSQL and isolated by guild ID.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Economy: `/balance`, `/pay`, `/salary`, `/task`
+- Moderation: `/warn`, `/unwarn`, `/warnings`, `/kick`, `/ban`, `/clear`, `/nickname`
+- Server setup: `/set-log`, `/set-welcome`, `/alias`, `/autoreply`, `/create-role`, `/create-channel`, `/hide-channel`, `/show-channel`
+- Owner-only economy controls: `/grant`, `/reset-balance`
 
 ## User preferences
 
@@ -38,7 +49,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Discord privileged intents must be enabled in the Developer Portal before setting `DISCORD_ENABLE_PRIVILEGED_INTENTS=true`.
+- The bot needs the matching Discord permissions for moderation and channel/role commands.
 
 ## Pointers
 

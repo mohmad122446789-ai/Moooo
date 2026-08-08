@@ -1,0 +1,1 @@
+- [Discord bot intents](discord-bot-intents.md) — keep privileged gateway intents opt-in because Discord rejects them unless enabled in the Developer Portal.
