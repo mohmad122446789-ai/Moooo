@@ -40,7 +40,7 @@
 
 - Economy: `/balance`, `/pay`, `/salary`, `/task`
 - Moderation: `/warn`, `/unwarn`, `/warnings`, `/kick`, `/ban`, `/clear`, `/nickname`
-- Server setup: `/set-log`, `/set-welcome`, `/alias`, `/autoreply`, `/create-role`, `/create-channel`, `/hide-channel`, `/show-channel`
+- Server setup: `/set-log`, `/set-welcome`, `/alias`, `/customize`, `/admin-customize`, `/autoreply`, `/color`, `/request`, `/create-role`, `/create-channel`, `/hide-channel`, `/show-channel`
 - Owner-only economy controls: `/grant`, `/reset-balance`
 
 ## User preferences

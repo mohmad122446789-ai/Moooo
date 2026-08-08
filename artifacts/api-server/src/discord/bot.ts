@@ -27,6 +27,22 @@ const OWNER_ID = process.env.BOT_OWNER_ID;
 const DAILY_SALARY = 2_500;
 const TASK_REWARD = 500;
 const MAX_DAILY_TASKS = 3;
+const ADMIN_COMMANDS = [
+  "warn",
+  "unwarn",
+  "warnings",
+  "kick",
+  "ban",
+  "clear",
+  "nickname",
+  "create-role",
+  "create-channel",
+  "hide-channel",
+  "show-channel",
+  "set-log",
+  "set-welcome",
+  "color",
+] as const;
 
 const intents = [
   GatewayIntentBits.Guilds,
@@ -235,6 +251,36 @@ const commandBuilders = [
         .setRequired(true),
     ),
   new SlashCommandBuilder()
+    .setName("customize")
+    .setDescription("إضافة اختصار شات لأمر")
+    .addStringOption((option) =>
+      option
+        .setName("command")
+        .setDescription("اسم الأمر الإنجليزي مثل ban أو balance")
+        .setRequired(true),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("name")
+        .setDescription("الاسم البديل مثل بانكاي")
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("admin-customize")
+    .setDescription("تخصيص اختصار أمر إداري — لمالك البوت فقط")
+    .addStringOption((option) =>
+      option
+        .setName("command")
+        .setDescription("أمر الإدارة مثل ban أو warn")
+        .setRequired(true),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("name")
+        .setDescription("الاختصار العربي مثل بانكاي")
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
     .setName("autoreply")
     .setDescription("إضافة رد تلقائي عند كتابة كلمة")
     .addStringOption((option) =>
@@ -242,6 +288,30 @@ const commandBuilders = [
     )
     .addStringOption((option) =>
       option.setName("reply").setDescription("الرد").setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("color")
+    .setDescription("تخصيص لون رتبة عضو — يجب اختيار العضو واللون")
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("العضو الذي سيحصل على اللون")
+        .setRequired(true),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("hex")
+        .setDescription("اللون بصيغة HEX مثل #5865F2")
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("request")
+    .setDescription("طلب وعرض صورة عضو")
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("العضو المطلوب — اختره أو ابحث عن يوزره")
+        .setRequired(true),
     ),
   new SlashCommandBuilder()
     .setName("grant")
@@ -405,14 +475,84 @@ async function handleInteraction(
       return replyText(interaction, `تم تفعيل الترحيب في ${channel}. استخدم {user} لمنشن العضو.`);
     }
 
-    if (command === "alias" || command === "autoreply") {
+    if (command === "admin-customize") {
+      if (!isOwner(userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
+      }
+      const targetCommand = interaction.options
+        .getString("command", true)
+        .replace(/^\//, "")
+        .toLowerCase();
+      const aliasName = interaction.options.getString("name", true).trim();
+      if (!(ADMIN_COMMANDS as readonly string[]).includes(targetCommand)) {
+        return replyText(
+          interaction,
+          `هذا ليس أمر إدارة مسموحًا. الأوامر المتاحة: ${ADMIN_COMMANDS.map((item) => `\`${item}\``).join("، ")}`,
+          true,
+        );
+      }
+      if (!aliasName || /\s/.test(aliasName) || aliasName.length > 32) {
+        return replyText(interaction, "الاختصار يجب أن يكون كلمة واحدة وبحد أقصى 32 حرفًا.", true);
+      }
+      const settings = await getSettings(guild.id);
+      const aliases = { ...settings.aliases, [aliasName]: targetCommand };
+      await db
+        .update(guildSettingsTable)
+        .set({ aliases, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(
+        interaction,
+        `تم تخصيص أمر الإدارة: اكتب **${aliasName}** في الشات ليعمل كـ **/${targetCommand}**. لا يزال Discord يطلب صلاحية الأمر قبل التنفيذ.`,
+      );
+    }
+
+    if (command === "customize" || command === "alias" || command === "autoreply") {
       if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
       const settings = await getSettings(guild.id);
-      const key = command === "alias" ? interaction.options.getString("command", true) : interaction.options.getString("trigger", true);
-      const value = command === "alias" ? interaction.options.getString("name", true) : interaction.options.getString("reply", true);
-      const current = command === "alias" ? { ...settings.aliases, [value]: key } : { ...settings.autoReplies, [key]: value };
-      await db.update(guildSettingsTable).set({ [command === "alias" ? "aliases" : "autoReplies"]: current, updatedAt: new Date() }).where(eq(guildSettingsTable.guildId, guild.id));
-      return replyText(interaction, command === "alias" ? `تم ربط **${value}** بالأمر **/${key}**. يمكنك كتابة ${value} @عضو في الشات.` : `تمت إضافة الرد التلقائي للكلمة **${key}**.`);
+      const isCustomize = command === "customize" || command === "alias";
+      const key = isCustomize ? interaction.options.getString("command", true) : interaction.options.getString("trigger", true);
+      const value = isCustomize ? interaction.options.getString("name", true) : interaction.options.getString("reply", true);
+      const current = isCustomize ? { ...settings.aliases, [value]: key.replace(/^\//, "").toLowerCase() } : { ...settings.autoReplies, [key]: value };
+      await db.update(guildSettingsTable).set({ [isCustomize ? "aliases" : "autoReplies"]: current, updatedAt: new Date() }).where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(interaction, isCustomize ? `تم تخصيص **${value}** ليشغّل الأمر **/${key.replace(/^\//, "").toLowerCase()}**. اكتب ${value} ثم منشن العضو عند الحاجة.` : `تمت إضافة الرد التلقائي للكلمة **${key}**.`);
+    }
+
+    if (command === "color") {
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles)) return replyText(interaction, "تحتاج صلاحية Manage Roles.", true);
+      const target = interaction.options.getUser("user", true);
+      const rawHex = interaction.options.getString("hex", true).trim();
+      const hex = rawHex.startsWith("#") ? rawHex : `#${rawHex}`;
+      if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
+        return replyText(interaction, "اكتب اللون بصيغة HEX صحيحة، مثال: `#5865F2`.", true);
+      }
+      const member = await guild.members.fetch(target.id).catch(() => null);
+      if (!member) return replyText(interaction, "هذا العضو غير موجود داخل السيرفر.", true);
+      const oldColorRoles = member.roles.cache.filter(
+        (role: GuildMember["roles"]["cache"] extends Map<string, infer Role> ? Role : never) =>
+          role.name.startsWith("لون ") && !role.managed,
+      );
+      if (oldColorRoles.size) await member.roles.remove(oldColorRoles, "استبدال لون العضو");
+      const roleName = `لون ${hex.toUpperCase()}`;
+      const role = guild.roles.cache.find(
+        (candidate: GuildMember["roles"]["cache"] extends Map<string, infer Role> ? Role : never) =>
+          candidate.name === roleName && !candidate.managed,
+      )
+        ?? await guild.roles.create({ name: roleName, color: hex, reason: `لون مخصص لـ ${target.tag}` });
+      await member.roles.add(role, "تخصيص لون العضو");
+      await sendLog(guild, "تخصيص لون عضو", `${target} حصل على اللون ${hex} بواسطة ${interaction.user}.`);
+      return replyText(interaction, `تم إعطاء ${target} رتبة اللون **${hex.toUpperCase()}**.`);
+    }
+
+    if (command === "request") {
+      const target = interaction.options.getUser("user", true);
+      const avatar = target.displayAvatarURL({ extension: "png", size: 1024 });
+      const embed = new EmbedBuilder()
+        .setTitle(`صورة ${target.tag}`)
+        .setDescription(`طلب الصورة بواسطة ${interaction.user}`)
+        .setImage(avatar)
+        .setColor(0x5865f2)
+        .setFooter({ text: `User ID: ${target.id}` });
+      return interaction.reply({ embeds: [embed] });
     }
 
     if (command === "grant" || command === "reset-balance") {
@@ -552,6 +692,80 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
     else await target.kick(reason);
     await sendLog(message.guild, alias === "ban" ? "حظر عضو" : "طرد عضو", `${target} بواسطة ${message.author}.\nالسبب: ${reason}`);
     await message.reply(`تم ${alias === "ban" ? "حظر" : "طرد"} ${target}.`);
+    return;
+  }
+
+  if (alias === "clear") {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+      await message.reply("تحتاج صلاحية Manage Messages.");
+      return;
+    }
+    const amount = Number(parts.find((part: string) => /^\d+$/.test(part)));
+    if (!amount || amount < 1 || amount > 100 || !("bulkDelete" in message.channel)) {
+      await message.reply("اكتب عددًا من 1 إلى 100، مثال: `مسح 20`.");
+      return;
+    }
+    await message.channel.bulkDelete(amount, true);
+    await message.channel.send(`تم مسح ${amount} رسالة.`);
+    return;
+  }
+
+  if (alias === "nickname" && message.mentions.members.first()) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageNicknames)) {
+      await message.reply("تحتاج صلاحية Manage Nicknames.");
+      return;
+    }
+    const target = message.mentions.members.first();
+    const nickname = parts.slice(2).filter((part: string) => !part.startsWith("<@")).join(" ").trim();
+    if (!nickname) {
+      await message.reply("اكتب الاسم الجديد بعد المنشن.");
+      return;
+    }
+    await target.setNickname(nickname);
+    await message.reply(`تم تغيير اسم ${target} إلى **${nickname}**.`);
+    return;
+  }
+
+  if (alias === "create-role") {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      await message.reply("تحتاج صلاحية Manage Roles.");
+      return;
+    }
+    const name = parts.slice(1).join(" ").trim();
+    if (!name) {
+      await message.reply("اكتب اسم الرتبة، مثال: `رتبة-جديدة`.");
+      return;
+    }
+    const role = await message.guild.roles.create({ name, reason: `بواسطة ${message.author.tag}` });
+    await message.reply(`تم صنع الرتبة ${role}.`);
+    return;
+  }
+
+  if (alias === "create-channel") {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      await message.reply("تحتاج صلاحية Manage Channels.");
+      return;
+    }
+    const name = parts.slice(1).join("-").trim();
+    if (!name) {
+      await message.reply("اكتب اسم الروم، مثال: `روم-جديد`.");
+      return;
+    }
+    const channel = await message.guild.channels.create({ name, type: ChannelType.GuildText });
+    await message.reply(`تم صنع الروم ${channel}.`);
+    return;
+  }
+
+  if ((alias === "hide-channel" || alias === "show-channel") && message.mentions.channels.first()) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      await message.reply("تحتاج صلاحية Manage Channels.");
+      return;
+    }
+    const channel = message.mentions.channels.first();
+    await channel.permissionOverwrites.edit(message.guild.roles.everyone, {
+      ViewChannel: alias === "show-channel",
+    });
+    await message.reply(`تم ${alias === "show-channel" ? "إظهار" : "إخفاء"} الروم.`);
   }
 }
 
