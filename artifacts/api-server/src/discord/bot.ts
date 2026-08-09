@@ -156,6 +156,41 @@ function isOwner(userId: string) {
   );
 }
 
+async function canBan(guild: Guild, userId: string, permissions?: { has: (permission: bigint) => boolean }) {
+  if (isOwner(userId) || permissions?.has(PermissionFlagsBits.BanMembers)) return true;
+  const settings = await getSettings(guild.id);
+  if (!settings.banRoleId) return false;
+  const member = await guild.members.fetch(userId).catch(() => null);
+  return Boolean(member?.roles.cache.has(settings.banRoleId));
+}
+
+async function checkBotBanCapability(guild: Guild, targetId: string) {
+  const botMember = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+  if (!botMember) {
+    return { ok: false, message: "لم أستطع العثور على عضوية البوت داخل السيرفر." };
+  }
+  if (!botMember.permissions.has(PermissionFlagsBits.BanMembers)) {
+    return {
+      ok: false,
+      message: "البوت نفسه لا يملك صلاحية Ban Members. أعطِ البوت صلاحية الحظر من إعدادات السيرفر.",
+    };
+  }
+  if (targetId === guild.ownerId) {
+    return { ok: false, message: "لا يمكن حظر مالك السيرفر." };
+  }
+  const target = await guild.members.fetch(targetId).catch(() => null);
+  if (!target) {
+    return { ok: false, message: "العضو غير موجود داخل السيرفر." };
+  }
+  if (!target.bannable || botMember.roles.highest.comparePositionTo(target.roles.highest) <= 0) {
+    return {
+      ok: false,
+      message: "لا يمكن للبوت حظر هذا العضو. ارفع رتبة البوت فوق رتبة العضو المستهدف.",
+    };
+  }
+  return { ok: true, target };
+}
+
 const commandBuilders = [
   new SlashCommandBuilder()
     .setName("balance")
@@ -235,6 +270,18 @@ const commandBuilders = [
         .setDescription("النص، استخدم {user} لمنشن العضو")
         .setRequired(false),
     ),
+  new SlashCommandBuilder()
+    .setName("set-ban-role")
+    .setDescription("تحديد رتبة الإدارة المسموح لها بالباند — لمالك البوت فقط")
+    .addRoleOption((option) =>
+      option
+        .setName("role")
+        .setDescription("رتبة الإدارة التي تقدر تبند")
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("remove-ban-role")
+    .setDescription("إزالة رتبة الباند المخصصة — لمالك البوت فقط"),
   new SlashCommandBuilder()
     .setName("alias")
     .setDescription("إنشاء اسم بديل لأمر سلاش")
@@ -346,6 +393,9 @@ const commandBuilders = [
     .addStringOption((option) =>
       option.setName("reason").setDescription("السبب").setRequired(false),
     ),
+  new SlashCommandBuilder()
+    .setName("ban-status")
+    .setDescription("فحص جاهزية البوت لتنفيذ الباند"),
   new SlashCommandBuilder()
     .setName("clear")
     .setDescription("مسح عدد من الرسائل")
@@ -475,6 +525,33 @@ async function handleInteraction(
       return replyText(interaction, `تم تفعيل الترحيب في ${channel}. استخدم {user} لمنشن العضو.`);
     }
 
+    if (command === "set-ban-role") {
+      if (!isOwner(userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
+      }
+      const role = interaction.options.getRole("role", true);
+      if (role.managed) {
+        return replyText(interaction, "لا يمكن اختيار رتبة مرتبطة ببوت أو تكامل.", true);
+      }
+      await db
+        .update(guildSettingsTable)
+        .set({ banRoleId: role.id, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      await sendLog(guild, "تغيير رتبة الباند", `تم تحديد ${role} كرتبة باند بواسطة ${interaction.user}.`);
+      return replyText(interaction, `تم. أعضاء رتبة ${role} يستطيعون الآن استخدام أمر الباند.`);
+    }
+
+    if (command === "remove-ban-role") {
+      if (!isOwner(userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
+      }
+      await db
+        .update(guildSettingsTable)
+        .set({ banRoleId: null, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(interaction, "تمت إزالة رتبة الباند المخصصة. سيحتاج الباند إلى صلاحية Ban Members أو أن يكون المستخدم مالك البوت.");
+    }
+
     if (command === "admin-customize") {
       if (!isOwner(userId)) {
         return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
@@ -555,6 +632,21 @@ async function handleInteraction(
       return interaction.reply({ embeds: [embed] });
     }
 
+    if (command === "ban-status") {
+      const botMember = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+      if (!botMember) return replyText(interaction, "لم أستطع العثور على البوت داخل السيرفر.", true);
+      const settings = await getSettings(guild.id);
+      return replyText(
+        interaction,
+        [
+          `صلاحية البوت Ban Members: ${botMember.permissions.has(PermissionFlagsBits.BanMembers) ? "موجودة" : "ناقصة"}`,
+          `رتبة الإدارة المخصصة للباند: ${settings.banRoleId ? `<@&${settings.banRoleId}>` : "غير محددة"}`,
+          "شرط إضافي: يجب أن تكون رتبة البوت أعلى من رتبة العضو المستهدف.",
+        ].join("\n"),
+        true,
+      );
+    }
+
     if (command === "grant" || command === "reset-balance") {
       if (!isOwner(userId)) return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       const target = interaction.options.getUser("user", true);
@@ -570,8 +662,21 @@ async function handleInteraction(
     const memberTarget = interaction.options.getMember("user");
     if (command === "kick" || command === "ban") {
       const needed = command === "ban" ? PermissionFlagsBits.BanMembers : PermissionFlagsBits.KickMembers;
-      if (!interaction.memberPermissions?.has(needed)) return replyText(interaction, `تحتاج صلاحية ${command === "ban" ? "Ban Members" : "Kick Members"}.`, true);
+      const allowed = command === "ban"
+        ? await canBan(guild, userId, interaction.memberPermissions)
+        : Boolean(interaction.memberPermissions?.has(needed) || isOwner(userId));
+      if (!allowed) return replyText(interaction, `تحتاج رتبة الباند المخصصة أو صلاحية ${command === "ban" ? "Ban Members" : "Kick Members"}.`, true);
       if (!memberTarget || !("kick" in memberTarget || "ban" in memberTarget)) return replyText(interaction, "لم أجد العضو داخل السيرفر.", true);
+      if (command === "ban") {
+        const capability = await checkBotBanCapability(guild, memberTarget.id);
+        if (!capability.ok) {
+          return replyText(
+            interaction,
+            capability.message ?? "تعذر تنفيذ الباند بسبب صلاحيات Discord.",
+            true,
+          );
+        }
+      }
       const reason = interaction.options.getString("reason") ?? "بدون سبب";
       if (command === "ban") await (memberTarget as GuildMember).ban({ reason });
       else await (memberTarget as GuildMember).kick(reason);
@@ -617,6 +722,23 @@ async function handleInteraction(
     return undefined;
   } catch (error) {
     log.error({ err: error, guildId: guild.id, command }, "Discord command failed");
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === 50013
+    ) {
+      const permissionMessage =
+        command === "ban"
+          ? "Discord رفض الباند: أعطِ البوت صلاحية Ban Members وارفع رتبته فوق العضو المستهدف."
+          : "Discord رفض العملية بسبب صلاحيات البوت أو ترتيب الرتب.";
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply(permissionMessage);
+      } else {
+        await replyText(interaction, permissionMessage, true);
+      }
+      return undefined;
+    }
     if (interaction.replied || interaction.deferred) await interaction.editReply("حدث خطأ غير متوقع أثناء تنفيذ الأمر.");
     else await replyText(interaction, "حدث خطأ غير متوقع أثناء تنفيذ الأمر.", true);
     return undefined;
@@ -682,13 +804,23 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
 
   if ((alias === "ban" || alias === "kick") && message.mentions.members.first()) {
     const permission = alias === "ban" ? PermissionFlagsBits.BanMembers : PermissionFlagsBits.KickMembers;
-    if (!message.member?.permissions.has(permission)) {
+    const allowed = alias === "ban"
+      ? await canBan(message.guild, message.author.id, message.member?.permissions)
+      : Boolean(message.member?.permissions.has(permission) || isOwner(message.author.id));
+    if (!allowed) {
       await message.reply(`تحتاج صلاحية ${alias === "ban" ? "Ban Members" : "Kick Members"}.`);
       return;
     }
     const target = message.mentions.members.first();
     const reason = parts.slice(2).filter((part: string) => !part.startsWith("<@")).join(" ") || "بدون سبب";
-    if (alias === "ban") await target.ban({ reason });
+    if (alias === "ban") {
+      const capability = await checkBotBanCapability(message.guild, target.id);
+      if (!capability.ok) {
+        await message.reply(capability.message);
+        return;
+      }
+      await target.ban({ reason });
+    }
     else await target.kick(reason);
     await sendLog(message.guild, alias === "ban" ? "حظر عضو" : "طرد عضو", `${target} بواسطة ${message.author}.\nالسبب: ${reason}`);
     await message.reply(`تم ${alias === "ban" ? "حظر" : "طرد"} ${target}.`);

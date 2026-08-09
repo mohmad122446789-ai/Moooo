@@ -46,6 +46,9 @@ export const guildSettingsTable = pgTable(
     guildId: text("guild_id").notNull(),
     logChannelId: text("log_channel_id"),
     welcomeChannelId: text("welcome_channel_id"),
+    banRoleId: text("ban_role_id"),
+    levelChannelId: text("level_channel_id"),
+    messagesPerLevel: integer("messages_per_level").notNull().default(100),
     welcomeMessage: text("welcome_message"),
     aliases: jsonb("aliases").$type<Record<string, string>>().notNull().default({}),
     autoReplies: jsonb("auto_replies")
@@ -60,6 +63,31 @@ export const guildSettingsTable = pgTable(
   }),
 );
 
+export const activityTable = pgTable(
+  "discord_activity",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id").notNull(),
+    userId: text("user_id").notNull(),
+    messageCount: integer("message_count").notNull().default(0),
+    level: integer("level").notNull().default(0),
+    points: integer("points").notNull().default(0),
+    dailyPoints: integer("daily_points").notNull().default(0),
+    dailyDate: text("daily_date").notNull().default(""),
+    weeklyPoints: integer("weekly_points").notNull().default(0),
+    weeklyKey: text("weekly_key").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    guildUserUnique: uniqueIndex("discord_activity_guild_user_unique").on(
+      table.guildId,
+      table.userId,
+    ),
+  }),
+);
+
 export type Wallet = typeof walletsTable.$inferSelect;
 export type Warning = typeof warningsTable.$inferSelect;
 export type GuildSettings = typeof guildSettingsTable.$inferSelect;
+export type Activity = typeof activityTable.$inferSelect;

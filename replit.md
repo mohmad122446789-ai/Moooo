@@ -40,7 +40,7 @@
 
 - Economy: `/balance`, `/pay`, `/salary`, `/task`
 - Moderation: `/warn`, `/unwarn`, `/warnings`, `/kick`, `/ban`, `/clear`, `/nickname`
-- Server setup: `/set-log`, `/set-welcome`, `/alias`, `/customize`, `/admin-customize`, `/autoreply`, `/color`, `/request`, `/create-role`, `/create-channel`, `/hide-channel`, `/show-channel`
+- Server setup: `/set-log`, `/set-welcome`, `/set-ban-role`, `/remove-ban-role`, `/alias`, `/customize`, `/admin-customize`, `/autoreply`, `/color`, `/request`, `/create-role`, `/create-channel`, `/hide-channel`, `/show-channel`
 - Owner-only economy controls: `/grant`, `/reset-balance`
 
 ## User preferences
@@ -51,6 +51,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 - Discord privileged intents must be enabled in the Developer Portal before setting `DISCORD_ENABLE_PRIVILEGED_INTENTS=true`.
 - The bot needs the matching Discord permissions for moderation and channel/role commands.
+- Aliases typed as normal chat messages require Message Content Intent in Discord Developer Portal and `DISCORD_ENABLE_PRIVILEGED_INTENTS=true`.
+- `/ban-status` reports the bot's current Ban Members permission and the configured ban role.
 
 ## Pointers
 
