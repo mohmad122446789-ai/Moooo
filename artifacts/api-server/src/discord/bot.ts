@@ -183,7 +183,7 @@ function helpEmbed() {
       "",
       "**الإدارة | Moderation**",
       "`/warn`, `/unwarn`, `/warnings` — التحذيرات | Warnings",
-      "`/kick`, `/ban`, `/clear` — إدارة الأعضاء والرسائل | Member and message moderation",
+      "`/kick`, `/ban`, `/clear`, `/timeout` — إدارة الأعضاء والرسائل | Member and message moderation",
       "`/set-ban-role` — رتبة الباند | Ban role",
       "`/remove-ban-role` — إزالة رتبة الباند | Remove ban role",
       "`/set-admin-room` — روم اختصارات الإدارة | Admin aliases room",
@@ -410,6 +410,12 @@ function replyText(
   ephemeral = false,
 ) {
   return interaction.reply({ content, ephemeral });
+}
+
+function isGlobalOwner(userId: string) {
+  return Boolean(
+    OWNER_ID === userId || client.application?.owner?.id === userId,
+  );
 }
 
 function isGlobalOwner(userId: string) {
