@@ -1,5 +1,9 @@
 import {
   AuditLogEvent,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChannelType,
   Client,
   EmbedBuilder,
@@ -14,6 +18,7 @@ import {
 } from "discord.js";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
+  activityTable,
   db,
   guildSettingsTable,
   warningsTable,
@@ -58,6 +63,260 @@ const client = new Client({ intents });
 
 function today() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function weekKey() {
+  const date = new Date();
+  const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const day = Math.floor((date.getTime() - start.getTime()) / 86_400_000);
+  return `${date.getUTCFullYear()}-${Math.ceil((day + start.getUTCDay() + 1) / 7)}`;
+}
+
+async function getActivity(guildId: string, userId: string) {
+  await db
+    .insert(activityTable)
+    .values({ guildId, userId, dailyDate: today(), weeklyKey: weekKey() })
+    .onConflictDoNothing({
+      target: [activityTable.guildId, activityTable.userId],
+    });
+  const [activity] = await db
+    .select()
+    .from(activityTable)
+    .where(
+      and(eq(activityTable.guildId, guildId), eq(activityTable.userId, userId)),
+    )
+    .limit(1);
+  if (!activity) throw new Error("Activity record could not be created.");
+  return activity;
+}
+
+async function recordActivity(guild: Guild, userId: string) {
+  const settings = await getSettings(guild.id);
+  const activity = await getActivity(guild.id, userId);
+  const currentDate = today();
+  const currentWeek = weekKey();
+  const dailyMessages = (activity.dailyDate === currentDate ? activity.dailyMessages : 0) + 1;
+  const weeklyMessages = (activity.weeklyKey === currentWeek ? activity.weeklyMessages : 0) + 1;
+  const messageCount = activity.messageCount + 1;
+  const points = Math.floor(messageCount / 3);
+  const dailyPoints = Math.floor(dailyMessages / 3);
+  const weeklyPoints = Math.floor(weeklyMessages / 3);
+  const messagesPerLevel = Math.max(1, settings.messagesPerLevel);
+  const nextLevel = Math.floor(messageCount / messagesPerLevel);
+
+  await db
+    .update(activityTable)
+    .set({
+      messageCount,
+      level: nextLevel,
+      points,
+      dailyMessages,
+      dailyPoints,
+      dailyDate: currentDate,
+      weeklyMessages,
+      weeklyPoints,
+      weeklyKey: currentWeek,
+      updatedAt: new Date(),
+    })
+    .where(eq(activityTable.id, activity.id));
+
+  if (nextLevel > activity.level && settings.levelChannelId) {
+    const channel = await guild.channels.fetch(settings.levelChannelId).catch(() => null);
+    if (channel?.isTextBased()) {
+      await channel.send(`ترقية! <@${userId}> وصل إلى **لفل ${nextLevel}** بعد ${messageCount} رسالة.`);
+    }
+  }
+  return {
+    ...activity,
+    messageCount,
+    level: nextLevel,
+    points,
+    dailyMessages,
+    dailyPoints,
+    weeklyMessages,
+    weeklyPoints,
+  };
+}
+
+async function leaderboard(guild: Guild, period: "day" | "week") {
+  const rows = await db
+    .select()
+    .from(activityTable)
+    .where(eq(activityTable.guildId, guild.id));
+  return rows
+    .map((row) => {
+      const activity = currentActivity(row);
+      return {
+        ...row,
+        dailyMessages: activity.dailyMessages,
+        dailyPoints: activity.dailyPoints,
+        weeklyMessages: activity.weeklyMessages,
+        weeklyPoints: activity.weeklyPoints,
+      };
+    })
+    .filter((row) => (period === "day" ? row.dailyPoints : row.weeklyPoints) > 0)
+    .sort((left, right) =>
+      (period === "day" ? right.dailyPoints - left.dailyPoints : right.weeklyPoints - left.weeklyPoints)
+      || (period === "day" ? right.dailyMessages - left.dailyMessages : right.weeklyMessages - left.weeklyMessages),
+    )
+    .slice(0, 10);
+}
+
+function helpEmbed() {
+  return new EmbedBuilder()
+    .setTitle("مساعدة البوت | Bot Help")
+    .setColor(0x5865f2)
+    .setDescription([
+      "**الاقتصاد | Economy**",
+      "`/balance` — عرض الرصيد | Check balance",
+      "`/pay` — تحويل B | Transfer B",
+      "`/salary` — الراتب اليومي | Daily salary",
+      "`/task` — مهمة يومية | Daily task",
+      "",
+      "**اللفل والتوب | Levels & Leaderboard**",
+      "`/level` — مستواك ورسائلك | Your level and messages",
+      "`/top day` — التوب اليومي | Daily top",
+      "`/top week` — التوب الأسبوعي | Weekly top",
+      "`t day` / `t week` — اختصار التوب في الشات | Chat leaderboard shortcuts",
+      "`/panel` — لوحة الأزرار | Button panel",
+      "",
+      "**الإدارة | Moderation**",
+      "`/warn`, `/unwarn`, `/warnings` — التحذيرات | Warnings",
+      "`/kick`, `/ban`, `/clear` — إدارة الأعضاء والرسائل | Member and message moderation",
+      "`/set-ban-role` — رتبة الباند | Ban role",
+      "`/remove-ban-role` — إزالة رتبة الباند | Remove ban role",
+      "`/set-admin-room` — روم اختصارات الإدارة | Admin aliases room",
+      "`/remove-admin-room` — إلغاء روم الإدارة | Remove admin room restriction",
+      "",
+      "**التخصيص | Customization**",
+      "`/admin-customize` — اختصار إداري | Admin chat alias",
+      "`/customize` — اختصار شات | Chat alias",
+      "`/set-level` — إعداد روم اللفل وعدد الرسائل | Configure level channel and message count",
+      "`/request` — صورة عضو | User avatar",
+      "",
+      "اكتب `/help` في أي وقت | Type `/help` anytime.",
+    ].join("\n"));
+}
+
+function panelComponents() {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId("bankai:level")
+        .setLabel("ترقية")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("bankai:task")
+        .setLabel("أخذ مهمة")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId("bankai:top-day")
+        .setLabel("توب اليوم")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("bankai:top-week")
+        .setLabel("توب الأسبوع")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+function currentActivity(activity: Awaited<ReturnType<typeof getActivity>>) {
+  const currentDate = today();
+  const currentWeek = weekKey();
+  return {
+    ...activity,
+    dailyMessages: activity.dailyDate === currentDate ? activity.dailyMessages : 0,
+    dailyPoints: activity.dailyDate === currentDate ? activity.dailyPoints : 0,
+    weeklyMessages: activity.weeklyKey === currentWeek ? activity.weeklyMessages : 0,
+    weeklyPoints: activity.weeklyKey === currentWeek ? activity.weeklyPoints : 0,
+  };
+}
+
+function levelProgress(
+  activity: Awaited<ReturnType<typeof getActivity>>,
+  messagesPerLevel: number,
+) {
+  const messages = Math.max(0, activity.messageCount);
+  const step = Math.max(1, messagesPerLevel);
+  const level = Math.floor(messages / step);
+  const nextLevelAt = (level + 1) * step;
+  return {
+    level,
+    messages,
+    nextLevelAt,
+    remaining: Math.max(0, nextLevelAt - messages),
+    points: Math.floor(messages / 3),
+    progress: messages % step,
+  };
+}
+
+async function levelEmbed(guild: Guild, userId: string) {
+  const settings = await getSettings(guild.id);
+  const activity = currentActivity(await getActivity(guild.id, userId));
+  const progress = levelProgress(activity, settings.messagesPerLevel);
+  return new EmbedBuilder()
+    .setTitle(`لفل العضو | Level`)
+    .setDescription(`<@${userId}>`)
+    .addFields(
+      { name: "اللفل | Level", value: `**${progress.level}**`, inline: true },
+      { name: "النقاط | Points", value: `**${progress.points}**`, inline: true },
+      { name: "الرسائل | Messages", value: `**${progress.messages}**`, inline: true },
+      {
+        name: "التقدم للفل التالي | Next level",
+        value: `${progress.progress}/${Math.max(1, settings.messagesPerLevel)} رسالة — متبقي **${progress.remaining}**`,
+      },
+      {
+        name: "نشاط اليوم/الأسبوع | Day/Week",
+        value: `${activity.dailyMessages} رسالة / ${activity.dailyPoints} نقطة — ${activity.weeklyMessages} رسالة / ${activity.weeklyPoints} نقطة`,
+      },
+    )
+    .setColor(0x5865f2);
+}
+
+async function handleButtonInteraction(interaction: ButtonInteraction) {
+  if (!interaction.guild) return;
+  const guild = interaction.guild;
+  if (interaction.customId === "bankai:level") {
+    return interaction.reply({
+      embeds: [await levelEmbed(guild, interaction.user.id)],
+      ephemeral: true,
+    });
+  }
+  if (interaction.customId === "bankai:task") {
+    const settings = await getSettings(guild.id);
+    const activity = await getActivity(guild.id, interaction.user.id);
+    const progress = levelProgress(activity, settings.messagesPerLevel);
+    return interaction.reply({
+      content: [
+        `مهمتك الحالية: اكتب **${progress.remaining}** رسالة للوصول إلى لفل **${progress.level + 1}**.`,
+        `كل **3 رسائل = نقطة واحدة**. مجموع نقاطك: **${progress.points}**.`,
+      ].join("\n"),
+      ephemeral: true,
+    });
+  }
+  if (interaction.customId === "bankai:top-day" || interaction.customId === "bankai:top-week") {
+    const period = interaction.customId === "bankai:top-day" ? "day" : "week";
+    const rows = await leaderboard(guild, period);
+    const title = period === "day" ? "توب اليوم | Daily Top" : "توب الأسبوع | Weekly Top";
+    const lines = rows.length
+      ? rows.map((row, index) => {
+        const points = period === "day" ? row.dailyPoints : row.weeklyPoints;
+        const messages = period === "day" ? row.dailyMessages : row.weeklyMessages;
+        return `**${index + 1}.** <@${row.userId}> — ${points} نقطة (${messages} رسالة)`;
+      })
+      : ["لا توجد نقاط مسجلة حتى الآن."];
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(title)
+          .setDescription(lines.join("\n"))
+          .setColor(0x5865f2),
+      ],
+      ephemeral: true,
+    });
+  }
+  return undefined;
 }
 
 async function getWallet(guildId: string, userId: string) {
@@ -224,6 +483,31 @@ const commandBuilders = [
         .setRequired(true),
     ),
   new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("شرح أوامر البوت بالعربي والإنجليزي"),
+  new SlashCommandBuilder()
+    .setName("panel")
+    .setDescription("فتح لوحة البوت التفاعلية بالأزرار"),
+  new SlashCommandBuilder()
+    .setName("level")
+    .setDescription("عرض لفل ورسائل ونقاط عضو")
+    .addUserOption((option) =>
+      option.setName("user").setDescription("العضو").setRequired(false),
+    ),
+  new SlashCommandBuilder()
+    .setName("top")
+    .setDescription("عرض ترتيب الأعضاء حسب النشاط")
+    .addStringOption((option) =>
+      option
+        .setName("period")
+        .setDescription("الفترة")
+        .addChoices(
+          { name: "يومي | Daily", value: "day" },
+          { name: "أسبوعي | Weekly", value: "week" },
+        )
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
     .setName("warn")
     .setDescription("تحذير عضو بسبب مخالفة")
     .addUserOption((option) =>
@@ -270,6 +554,37 @@ const commandBuilders = [
         .setDescription("النص، استخدم {user} لمنشن العضو")
         .setRequired(false),
     ),
+  new SlashCommandBuilder()
+    .setName("set-level")
+    .setDescription("تحديد روم اللفل وعدد الرسائل لكل لفل")
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("روم إشعارات اللفل")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true),
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("messages")
+        .setDescription("عدد الرسائل المطلوبة لكل لفل")
+        .setMinValue(1)
+        .setMaxValue(100000)
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("set-admin-room")
+    .setDescription("تحديد الروم الذي تعمل فيه اختصارات الإدارة — لمالك البوت فقط")
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("روم الإدارة")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("remove-admin-room")
+    .setDescription("إلغاء تقييد اختصارات الإدارة بروم — لمالك البوت فقط"),
   new SlashCommandBuilder()
     .setName("set-ban-role")
     .setDescription("تحديد رتبة الإدارة المسموح لها بالباند — لمالك البوت فقط")
@@ -440,7 +755,9 @@ const commandBuilders = [
 async function handleInteraction(
   interaction: Parameters<typeof client.on>[1] extends never ? never : any,
 ): Promise<unknown> {
-  if (!interaction.isChatInputCommand() || !interaction.guild) return;
+  if (!interaction.guild) return;
+  if (interaction.isButton()) return handleButtonInteraction(interaction);
+  if (!interaction.isChatInputCommand()) return;
   const guild = interaction.guild;
   const command = interaction.commandName;
   const userId = interaction.user.id;
@@ -486,6 +803,43 @@ async function handleInteraction(
       return replyText(interaction, `مهمة مكتملة (**${interaction.options.getString("sentence", true)}**). حصلت على **${TASK_REWARD} B** — أنجزت ${completed + 1}/${MAX_DAILY_TASKS} اليوم.`);
     }
 
+    if (command === "help") {
+      return interaction.reply({ embeds: [helpEmbed()] });
+    }
+
+    if (command === "panel") {
+      return interaction.reply({
+        content: "لوحة Bankai التفاعلية | Bankai interactive panel",
+        components: panelComponents(),
+      });
+    }
+
+    if (command === "level") {
+      const target = interaction.options.getUser("user") ?? interaction.user;
+      return interaction.reply({ embeds: [await levelEmbed(guild, target.id)] });
+    }
+
+    if (command === "top") {
+      const period = interaction.options.getString("period", true) as "day" | "week";
+      const rows = await leaderboard(guild, period);
+      const title = period === "day" ? "توب اليوم | Daily Top" : "توب الأسبوع | Weekly Top";
+      const lines = rows.length
+        ? rows.map((row, index) => {
+          const points = period === "day" ? row.dailyPoints : row.weeklyPoints;
+          const messages = period === "day" ? row.dailyMessages : row.weeklyMessages;
+          return `**${index + 1}.** <@${row.userId}> — ${points} نقطة (${messages} رسالة)`;
+        })
+        : ["لا توجد نقاط مسجلة حتى الآن."];
+      return interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(title)
+            .setDescription(lines.join("\n"))
+            .setColor(0x5865f2),
+        ],
+      });
+    }
+
     if (command === "warn") {
       if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) return replyText(interaction, "تحتاج صلاحية Moderate Members.", true);
       const target = interaction.options.getUser("user", true);
@@ -523,6 +877,55 @@ async function handleInteraction(
       const message = interaction.options.getString("message") ?? "أهلًا {user}، نورت السيرفر.";
       await db.update(guildSettingsTable).set({ welcomeChannelId: channel.id, welcomeMessage: message, updatedAt: new Date() }).where(eq(guildSettingsTable.guildId, guild.id));
       return replyText(interaction, `تم تفعيل الترحيب في ${channel}. استخدم {user} لمنشن العضو.`);
+    }
+
+    if (command === "set-level") {
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
+      }
+      const channel = interaction.options.getChannel("channel", true);
+      const messages = interaction.options.getInteger("messages", true);
+      await getSettings(guild.id);
+      await db
+        .update(guildSettingsTable)
+        .set({
+          levelChannelId: channel.id,
+          messagesPerLevel: messages,
+          updatedAt: new Date(),
+        })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(
+        interaction,
+        `تم ضبط اللفل: كل **${messages}** رسالة = لفل جديد، وإشعارات اللفل في ${channel}.`,
+      );
+    }
+
+    if (command === "set-admin-room") {
+      if (!isOwner(userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
+      }
+      const channel = interaction.options.getChannel("channel", true);
+      await getSettings(guild.id);
+      await db
+        .update(guildSettingsTable)
+        .set({ adminCommandChannelId: channel.id, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(
+        interaction,
+        `تم تحديد ${channel} كروم اختصارات الإدارة. لن تعمل الاختصارات الإدارية خارجه.`,
+      );
+    }
+
+    if (command === "remove-admin-room") {
+      if (!isOwner(userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
+      }
+      await getSettings(guild.id);
+      await db
+        .update(guildSettingsTable)
+        .set({ adminCommandChannelId: null, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(interaction, "تم إلغاء تقييد اختصارات الإدارة بروم محدد.");
     }
 
     if (command === "set-ban-role") {
@@ -747,15 +1150,41 @@ async function handleInteraction(
 
 async function handleMessage(message: Parameters<typeof client.on>[1] extends never ? never : any) {
   if (!message.guild || message.author.bot) return;
-  const content = message.content.trim();
   const settings = await getSettings(message.guild.id);
+  await recordActivity(message.guild, message.author.id);
+  const content = message.content.trim();
+  if (!content) return;
   const lower = content.toLowerCase();
   const autoReply = Object.entries(settings.autoReplies).find(([trigger]) => lower.includes(trigger.toLowerCase()));
   if (autoReply) await message.reply(autoReply[1]);
 
   const parts = content.split(/\s+/);
+  if (parts[0]?.toLowerCase() === "t" && (parts[1] === "day" || parts[1] === "week")) {
+    const period = parts[1] as "day" | "week";
+    const rows = await leaderboard(message.guild, period);
+    const lines = rows.length
+      ? rows.map((row, index) => {
+        const points = period === "day" ? row.dailyPoints : row.weeklyPoints;
+        const messages = period === "day" ? row.dailyMessages : row.weeklyMessages;
+        return `**${index + 1}.** <@${row.userId}> — ${points} نقطة (${messages} رسالة)`;
+      })
+      : ["لا توجد نقاط مسجلة حتى الآن."];
+    await message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(period === "day" ? "توب اليوم | Daily Top" : "توب الأسبوع | Weekly Top")
+          .setDescription(lines.join("\n"))
+          .setColor(0x5865f2),
+      ],
+    });
+    return;
+  }
   const alias = settings.aliases[parts[0]] ?? settings.aliases[parts[0]?.toLowerCase()];
   if (!alias) return;
+  const isAdminAlias = (ADMIN_COMMANDS as readonly string[]).includes(alias);
+  if (isAdminAlias && settings.adminCommandChannelId && message.channel.id !== settings.adminCommandChannelId) {
+    return;
+  }
   if (alias === "balance" || alias === "salary" || alias === "task" || alias === "pay") {
     if (alias === "balance") {
       const target = message.mentions.users.first() ?? message.author;
