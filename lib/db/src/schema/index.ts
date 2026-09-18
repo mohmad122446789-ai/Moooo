@@ -47,6 +47,7 @@ export const guildSettingsTable = pgTable(
     logChannelId: text("log_channel_id"),
     welcomeChannelId: text("welcome_channel_id"),
     banRoleId: text("ban_role_id"),
+    bankaiOwnerId: text("bankai_owner_id"),
     adminCommandChannelId: text("admin_command_channel_id"),
     levelChannelId: text("level_channel_id"),
     messagesPerLevel: integer("messages_per_level").notNull().default(100),

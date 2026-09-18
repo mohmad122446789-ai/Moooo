@@ -179,6 +179,7 @@ function helpEmbed() {
       "`/top week` — التوب الأسبوعي | Weekly top",
       "`t day` / `t week` — اختصار التوب في الشات | Chat leaderboard shortcuts",
       "`/panel` — لوحة الأزرار | Button panel",
+      "`/hi` — ترحيب بالبـوت | Say hi to Bankai",
       "",
       "**الإدارة | Moderation**",
       "`/warn`, `/unwarn`, `/warnings` — التحذيرات | Warnings",
@@ -187,6 +188,8 @@ function helpEmbed() {
       "`/remove-ban-role` — إزالة رتبة الباند | Remove ban role",
       "`/set-admin-room` — روم اختصارات الإدارة | Admin aliases room",
       "`/remove-admin-room` — إلغاء روم الإدارة | Remove admin room restriction",
+      "`/set-bankai-owner` — تعيين مالك Bankai | Assign a Bankai owner",
+      "`/remove-bankai-owner` — إزالة مالك Bankai | Remove Bankai owner",
       "",
       "**التخصيص | Customization**",
       "`/admin-customize` — اختصار إداري | Admin chat alias",
@@ -409,14 +412,24 @@ function replyText(
   return interaction.reply({ content, ephemeral });
 }
 
-function isOwner(userId: string) {
+function isGlobalOwner(userId: string) {
   return Boolean(
     OWNER_ID === userId || client.application?.owner?.id === userId,
   );
 }
 
+async function hasBankaiControl(guild: Guild, userId: string) {
+  if (isGlobalOwner(userId) || guild.ownerId === userId) return true;
+  const settings = await getSettings(guild.id);
+  return settings.bankaiOwnerId === userId;
+}
+
+function isServerOwner(guild: Guild, userId: string) {
+  return guild.ownerId === userId || isGlobalOwner(userId);
+}
+
 async function canBan(guild: Guild, userId: string, permissions?: { has: (permission: bigint) => boolean }) {
-  if (isOwner(userId) || permissions?.has(PermissionFlagsBits.BanMembers)) return true;
+  if (await hasBankaiControl(guild, userId) || permissions?.has(PermissionFlagsBits.BanMembers)) return true;
   const settings = await getSettings(guild.id);
   if (!settings.banRoleId) return false;
   const member = await guild.members.fetch(userId).catch(() => null);
@@ -485,6 +498,9 @@ const commandBuilders = [
   new SlashCommandBuilder()
     .setName("help")
     .setDescription("شرح أوامر البوت بالعربي والإنجليزي"),
+  new SlashCommandBuilder()
+    .setName("hi")
+    .setDescription("تحية Bankai والتأكد من أن البوت يعمل"),
   new SlashCommandBuilder()
     .setName("panel")
     .setDescription("فتح لوحة البوت التفاعلية بالأزرار"),
@@ -585,6 +601,15 @@ const commandBuilders = [
   new SlashCommandBuilder()
     .setName("remove-admin-room")
     .setDescription("إلغاء تقييد اختصارات الإدارة بروم — لمالك البوت فقط"),
+  new SlashCommandBuilder()
+    .setName("set-bankai-owner")
+    .setDescription("تعيين مستخدم كمالك Bankai — لمالك السيرفر فقط")
+    .addUserOption((option) =>
+      option.setName("user").setDescription("المستخدم الذي سيتحكم في Bankai").setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("remove-bankai-owner")
+    .setDescription("إزالة مالك Bankai — لمالك السيرفر فقط"),
   new SlashCommandBuilder()
     .setName("set-ban-role")
     .setDescription("تحديد رتبة الإدارة المسموح لها بالباند — لمالك البوت فقط")
@@ -807,6 +832,13 @@ async function handleInteraction(
       return interaction.reply({ embeds: [helpEmbed()] });
     }
 
+    if (command === "hi") {
+      return replyText(
+        interaction,
+        `هلا ${interaction.user}، أنا **Bankai** وأعمل في هذا السيرفر.\nHello! أنا جاهز لخدمة السيرفر.`,
+      );
+    }
+
     if (command === "panel") {
       return interaction.reply({
         content: "لوحة Bankai التفاعلية | Bankai interactive panel",
@@ -841,7 +873,7 @@ async function handleInteraction(
     }
 
     if (command === "warn") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) return replyText(interaction, "تحتاج صلاحية Moderate Members.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Moderate Members.", true);
       const target = interaction.options.getUser("user", true);
       const reason = interaction.options.getString("reason", true);
       await db.insert(warningsTable).values({ guildId: guild.id, userId: target.id, moderatorId: userId, reason });
@@ -850,7 +882,7 @@ async function handleInteraction(
     }
 
     if (command === "unwarn" || command === "warnings") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) return replyText(interaction, "تحتاج صلاحية Moderate Members.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Moderate Members.", true);
       const target = interaction.options.getUser("user", true);
       const rows = await db.select().from(warningsTable).where(and(eq(warningsTable.guildId, guild.id), eq(warningsTable.userId, target.id))).orderBy(desc(warningsTable.createdAt));
       if (command === "unwarn") {
@@ -865,14 +897,14 @@ async function handleInteraction(
     }
 
     if (command === "set-log") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
       const channel = interaction.options.getChannel("channel", true);
       await db.update(guildSettingsTable).set({ logChannelId: channel.id, updatedAt: new Date() }).where(eq(guildSettingsTable.guildId, guild.id));
       return replyText(interaction, `تم تحديد ${channel} كسجل للأحداث.`);
     }
 
     if (command === "set-welcome") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
       const channel = interaction.options.getChannel("channel", true);
       const message = interaction.options.getString("message") ?? "أهلًا {user}، نورت السيرفر.";
       await db.update(guildSettingsTable).set({ welcomeChannelId: channel.id, welcomeMessage: message, updatedAt: new Date() }).where(eq(guildSettingsTable.guildId, guild.id));
@@ -880,7 +912,7 @@ async function handleInteraction(
     }
 
     if (command === "set-level") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) && !(await hasBankaiControl(guild, userId))) {
         return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
       }
       const channel = interaction.options.getChannel("channel", true);
@@ -901,7 +933,7 @@ async function handleInteraction(
     }
 
     if (command === "set-admin-room") {
-      if (!isOwner(userId)) {
+      if (!(await hasBankaiControl(guild, userId))) {
         return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       }
       const channel = interaction.options.getChannel("channel", true);
@@ -917,7 +949,7 @@ async function handleInteraction(
     }
 
     if (command === "remove-admin-room") {
-      if (!isOwner(userId)) {
+      if (!(await hasBankaiControl(guild, userId))) {
         return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       }
       await getSettings(guild.id);
@@ -928,8 +960,39 @@ async function handleInteraction(
       return replyText(interaction, "تم إلغاء تقييد اختصارات الإدارة بروم محدد.");
     }
 
+    if (command === "set-bankai-owner") {
+      if (!isServerOwner(guild, userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك السيرفر فقط.", true);
+      }
+      const target = interaction.options.getUser("user", true);
+      if (target.bot) {
+        return replyText(interaction, "لا يمكن تعيين بوت كمالك Bankai.", true);
+      }
+      await getSettings(guild.id);
+      await db
+        .update(guildSettingsTable)
+        .set({ bankaiOwnerId: target.id, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(
+        interaction,
+        `تم تعيين ${target} كمالك Bankai. أصبح بإمكانه التحكم بأوامر وإعدادات البوت.`,
+      );
+    }
+
+    if (command === "remove-bankai-owner") {
+      if (!isServerOwner(guild, userId)) {
+        return replyText(interaction, "هذا الأمر متاح لمالك السيرفر فقط.", true);
+      }
+      await getSettings(guild.id);
+      await db
+        .update(guildSettingsTable)
+        .set({ bankaiOwnerId: null, updatedAt: new Date() })
+        .where(eq(guildSettingsTable.guildId, guild.id));
+      return replyText(interaction, "تمت إزالة مالك Bankai المخصص.");
+    }
+
     if (command === "set-ban-role") {
-      if (!isOwner(userId)) {
+      if (!(await hasBankaiControl(guild, userId))) {
         return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       }
       const role = interaction.options.getRole("role", true);
@@ -945,7 +1008,7 @@ async function handleInteraction(
     }
 
     if (command === "remove-ban-role") {
-      if (!isOwner(userId)) {
+      if (!(await hasBankaiControl(guild, userId))) {
         return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       }
       await db
@@ -956,7 +1019,7 @@ async function handleInteraction(
     }
 
     if (command === "admin-customize") {
-      if (!isOwner(userId)) {
+      if (!(await hasBankaiControl(guild, userId))) {
         return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       }
       const targetCommand = interaction.options
@@ -987,7 +1050,7 @@ async function handleInteraction(
     }
 
     if (command === "customize" || command === "alias" || command === "autoreply") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Server.", true);
       const settings = await getSettings(guild.id);
       const isCustomize = command === "customize" || command === "alias";
       const key = isCustomize ? interaction.options.getString("command", true) : interaction.options.getString("trigger", true);
@@ -998,7 +1061,7 @@ async function handleInteraction(
     }
 
     if (command === "color") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles)) return replyText(interaction, "تحتاج صلاحية Manage Roles.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Roles.", true);
       const target = interaction.options.getUser("user", true);
       const rawHex = interaction.options.getString("hex", true).trim();
       const hex = rawHex.startsWith("#") ? rawHex : `#${rawHex}`;
@@ -1051,7 +1114,7 @@ async function handleInteraction(
     }
 
     if (command === "grant" || command === "reset-balance") {
-      if (!isOwner(userId)) return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
+      if (!(await hasBankaiControl(guild, userId))) return replyText(interaction, "هذا الأمر متاح لمالك البوت فقط.", true);
       const target = interaction.options.getUser("user", true);
       if (command === "grant") {
         const amount = interaction.options.getInteger("amount", true);
@@ -1067,7 +1130,7 @@ async function handleInteraction(
       const needed = command === "ban" ? PermissionFlagsBits.BanMembers : PermissionFlagsBits.KickMembers;
       const allowed = command === "ban"
         ? await canBan(guild, userId, interaction.memberPermissions)
-        : Boolean(interaction.memberPermissions?.has(needed) || isOwner(userId));
+        : Boolean(interaction.memberPermissions?.has(needed) || await hasBankaiControl(guild, userId));
       if (!allowed) return replyText(interaction, `تحتاج رتبة الباند المخصصة أو صلاحية ${command === "ban" ? "Ban Members" : "Kick Members"}.`, true);
       if (!memberTarget || !("kick" in memberTarget || "ban" in memberTarget)) return replyText(interaction, "لم أجد العضو داخل السيرفر.", true);
       if (command === "ban") {
@@ -1088,7 +1151,7 @@ async function handleInteraction(
     }
 
     if (command === "clear") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) return replyText(interaction, "تحتاج صلاحية Manage Messages.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Messages.", true);
       const channel = interaction.channel;
       const amount = interaction.options.getInteger("amount", true);
       if (!channel || !("bulkDelete" in channel)) return replyText(interaction, "هذا الأمر يعمل في الرومات النصية فقط.", true);
@@ -1097,26 +1160,26 @@ async function handleInteraction(
     }
 
     if (command === "nickname") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageNicknames)) return replyText(interaction, "تحتاج صلاحية Manage Nicknames.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageNicknames) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Nicknames.", true);
       if (!memberTarget || !("setNickname" in memberTarget)) return replyText(interaction, "لم أجد العضو.", true);
       await (memberTarget as GuildMember).setNickname(interaction.options.getString("name", true));
       return replyText(interaction, "تم تغيير اسم العضو.");
     }
 
     if (command === "create-role") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles)) return replyText(interaction, "تحتاج صلاحية Manage Roles.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Roles.", true);
       const role = await guild.roles.create({ name: interaction.options.getString("name", true), reason: `بواسطة ${interaction.user.tag}` });
       return replyText(interaction, `تم صنع الرتبة ${role}.`);
     }
 
     if (command === "create-channel") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) return replyText(interaction, "تحتاج صلاحية Manage Channels.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Channels.", true);
       const channel = await guild.channels.create({ name: interaction.options.getString("name", true), type: ChannelType.GuildText });
       return replyText(interaction, `تم صنع الروم ${channel}.`);
     }
 
     if (command === "hide-channel" || command === "show-channel") {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) return replyText(interaction, "تحتاج صلاحية Manage Channels.", true);
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels) && !(await hasBankaiControl(guild, userId))) return replyText(interaction, "تحتاج صلاحية Manage Channels.", true);
       const channel = interaction.options.getChannel("channel", true);
       if (!("permissionOverwrites" in channel)) return replyText(interaction, "اختر رومًا نصيًا.", true);
       await channel.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: command === "show-channel" });
@@ -1214,7 +1277,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
   }
 
   if (alias === "warn" && message.mentions.users.first()) {
-    if (!message.member?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ModerateMembers) && !(await hasBankaiControl(message.guild, message.author.id))) {
       await message.reply("تحتاج صلاحية Moderate Members.");
       return;
     }
@@ -1235,7 +1298,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
     const permission = alias === "ban" ? PermissionFlagsBits.BanMembers : PermissionFlagsBits.KickMembers;
     const allowed = alias === "ban"
       ? await canBan(message.guild, message.author.id, message.member?.permissions)
-      : Boolean(message.member?.permissions.has(permission) || isOwner(message.author.id));
+      : Boolean(message.member?.permissions.has(permission) || await hasBankaiControl(message.guild, message.author.id));
     if (!allowed) {
       await message.reply(`تحتاج صلاحية ${alias === "ban" ? "Ban Members" : "Kick Members"}.`);
       return;
@@ -1257,7 +1320,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
   }
 
   if (alias === "clear") {
-    if (!message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageMessages) && !(await hasBankaiControl(message.guild, message.author.id))) {
       await message.reply("تحتاج صلاحية Manage Messages.");
       return;
     }
@@ -1272,7 +1335,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
   }
 
   if (alias === "nickname" && message.mentions.members.first()) {
-    if (!message.member?.permissions.has(PermissionFlagsBits.ManageNicknames)) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageNicknames) && !(await hasBankaiControl(message.guild, message.author.id))) {
       await message.reply("تحتاج صلاحية Manage Nicknames.");
       return;
     }
@@ -1288,7 +1351,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
   }
 
   if (alias === "create-role") {
-    if (!message.member?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageRoles) && !(await hasBankaiControl(message.guild, message.author.id))) {
       await message.reply("تحتاج صلاحية Manage Roles.");
       return;
     }
@@ -1303,7 +1366,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
   }
 
   if (alias === "create-channel") {
-    if (!message.member?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageChannels) && !(await hasBankaiControl(message.guild, message.author.id))) {
       await message.reply("تحتاج صلاحية Manage Channels.");
       return;
     }
@@ -1318,7 +1381,7 @@ async function handleMessage(message: Parameters<typeof client.on>[1] extends ne
   }
 
   if ((alias === "hide-channel" || alias === "show-channel") && message.mentions.channels.first()) {
-    if (!message.member?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageChannels) && !(await hasBankaiControl(message.guild, message.author.id))) {
       await message.reply("تحتاج صلاحية Manage Channels.");
       return;
     }
