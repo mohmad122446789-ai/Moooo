@@ -322,19 +322,17 @@ async function handleButtonInteraction(interaction: ButtonInteraction) {
   return undefined;
 }
 
-async function getWallet(guildId: string, userId: string) {
+async function getWallet(userId: string) {
   await db
     .insert(walletsTable)
-    .values({ guildId, userId, tasksDate: today() })
+    .values({ userId, tasksDate: today() })
     .onConflictDoNothing({
-      target: [walletsTable.guildId, walletsTable.userId],
+      target: walletsTable.userId,
     });
   const [wallet] = await db
     .select()
     .from(walletsTable)
-    .where(
-      and(eq(walletsTable.guildId, guildId), eq(walletsTable.userId, userId)),
-    )
+    .where(eq(walletsTable.userId, userId))
     .limit(1);
   if (!wallet) throw new Error("Wallet could not be created.");
   return wallet;
@@ -354,29 +352,25 @@ async function getSettings(guildId: string) {
   return settings;
 }
 
-async function addMoney(guildId: string, userId: string, amount: number) {
-  await getWallet(guildId, userId);
+async function addMoney(userId: string, amount: number) {
+  await getWallet(userId);
   const [wallet] = await db
     .update(walletsTable)
     .set({
       balance: sql`${walletsTable.balance} + ${amount}`,
       updatedAt: new Date(),
     })
-    .where(
-      and(eq(walletsTable.guildId, guildId), eq(walletsTable.userId, userId)),
-    )
+    .where(eq(walletsTable.userId, userId))
     .returning();
   return wallet;
 }
 
-async function setMoney(guildId: string, userId: string, amount: number) {
-  await getWallet(guildId, userId);
+async function setMoney(userId: string, amount: number) {
+  await getWallet(userId);
   const [wallet] = await db
     .update(walletsTable)
     .set({ balance: amount, updatedAt: new Date() })
-    .where(
-      and(eq(walletsTable.guildId, guildId), eq(walletsTable.userId, userId)),
-    )
+    .where(eq(walletsTable.userId, userId))
     .returning();
   return wallet;
 }
@@ -410,12 +404,6 @@ function replyText(
   ephemeral = false,
 ) {
   return interaction.reply({ content, ephemeral });
-}
-
-function isGlobalOwner(userId: string) {
-  return Boolean(
-    OWNER_ID === userId || client.application?.owner?.id === userId,
-  );
 }
 
 function isGlobalOwner(userId: string) {

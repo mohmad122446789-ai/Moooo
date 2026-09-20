@@ -13,7 +13,6 @@ export const walletsTable = pgTable(
   "discord_wallets",
   {
     id: serial("id").primaryKey(),
-    guildId: text("guild_id").notNull(),
     userId: text("user_id").notNull(),
     balance: bigint("balance", { mode: "number" }).notNull().default(0),
     lastSalaryAt: timestamp("last_salary_at", { withTimezone: true }),
@@ -23,10 +22,7 @@ export const walletsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
-    guildUserUnique: uniqueIndex("discord_wallets_guild_user_unique").on(
-      table.guildId,
-      table.userId,
-    ),
+    userUnique: uniqueIndex("discord_wallets_user_unique").on(table.userId),
   }),
 );
 
